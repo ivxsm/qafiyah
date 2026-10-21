@@ -27,8 +27,8 @@ bun run dev
 `bun run dev` (`scripts/dev/run.ts`) does these steps, in order:
 
 1. It checks the prerequisites (`bun run doctor`, without the optional tools). It stops if a tool to run the site is missing or too old, and only warns about the tools for committing.
-2. It downloads the newest database dump from R2 (`bun run data:pull`), when `.env` has the four `DATA_*` values. Without them, or when the download fails, it uses the newest local dump, or the bundled `data/db/0000_default/` sample of 100 poems. See `data/db/README.md`.
-3. It starts Postgres and Elasticsearch with Docker Compose, and restores the dump on a new volume.
+2. It picks the dump: the bundled `data/db/0000_default/` sample of 100 poems, even when a full dump is on disk. `--dump <folder>` picks a full dump instead, and downloads it with `bun run data:pull` if it is missing. See "Working with the full corpus" below.
+3. It starts Postgres and Elasticsearch with Docker Compose, and restores the dump on a new volume. `docker-compose.dev.yml` mounts only the chosen folder at `/dumps`.
 4. It runs the search indexer once to fill Elasticsearch.
 5. It creates `apps/web/.env` if that file does not exist. The file holds only `PUBLIC_API_URL`, which points at the local API.
 6. It builds the API and the MCP server (`cargo build -p qafiyah-api -p qafiyah-mcp`), and starts the API, then the MCP server, then the web app. The combined log gives each one a prefix and a color. To also start the inspector after the web app is ready, pass `--inspector`.
@@ -41,14 +41,19 @@ In a terminal, each step shows a live line with its elapsed time. Where there is
 
 When you pipe the output, each step prints one plain line.
 
-The first run is the slow one. On an Apple silicon laptop with a full dump (0037, about 349,000 poems), it took about seven and a half minutes to "web ready":
+The first run is the slow one. With the 100-poem sample, the restore and the indexing take seconds, so the two compiles and the download of the Postgres and Elasticsearch images take most of the time. Later runs keep the volumes, the indexer image, and `target/`. So they skip the restore and the indexing, and take about a minute. Most of that minute is the wait for Elasticsearch to report healthy.
 
-- about 1 minute 45 seconds to restore the dump into a new volume
-- about 4 minutes 45 seconds for the indexer, which builds its image and then indexes every poem
-- about 50 seconds to compile the API
-- the download of the Postgres and Elasticsearch images, on the very first run only
+### Working with the full corpus
 
-With the 100-poem sample, the restore and the indexing take seconds, so the two compiles take most of the time. Later runs keep the volumes, the indexer image, and `target/`. So they skip the restore and the indexing, and take about a minute. Most of that minute is the wait for Elasticsearch to report healthy.
+Use the full corpus only for data work: a corpus fix, a new dump, or a check that needs every poem. It needs the four `DATA_*` values in `.env` (see below).
+
+```bash
+bun run dev --dump 0046_15_10_2026        # a fresh database restores this dump
+bun run db:reset --dump 0046_15_10_2026   # switch an existing database to it
+bun run db:reset                          # back to the sample
+```
+
+A database keeps its data until `db:reset`, so `bun run dev` without `--dump` does not undo a full dump. A fresh full dump takes about 20 minutes on an Apple silicon laptop (0046): about 7 minutes to restore it, and about 12 minutes to build the search index. It also takes about 3.5 GB of disk.
 
 Default URLs:
 
@@ -61,7 +66,7 @@ Default URLs:
 | Postgres      | localhost:5434            |
 | Elasticsearch | localhost:9201            |
 
-The ports come from `config.ts` (`DEV_WEB_PORT`, `DEV_API_PORT`, `DEV_MCP_PORT`, `DEV_INSPECTOR_PORT`, `DEV_POSTGRES_PORT`, `DEV_ES_PORT`, `DEV_EDGE_PORT`). Each app also reads its port from an environment variable: `PORT` for the API, `MCP_PORT` for the MCP server, `WEB_PORT`, `INSPECTOR_PORT`, and `DEV_POSTGRES_PORT`. `--worktree` sets these variables with an offset (see "Working in a git worktree").
+The ports come from `config.ts` (`DEV_WEB_PORT`, `DEV_API_PORT`, `DEV_MCP_PORT`, `DEV_INSPECTOR_PORT`, `DEV_POSTGRES_PORT`, `DEV_ES_PORT`, `DEV_EDGE_PORT`). Each app also reads its port from an environment variable: `PORT` for the API, `MCP_PORT` for the MCP server, `WEB_PORT`, `INSPECTOR_PORT`, and `DEV_POSTGRES_PORT`.
 
 To stop every running process, press `Ctrl-C`. The runner sends SIGTERM, then SIGKILL after 5 seconds.
 
@@ -84,7 +89,7 @@ bun run reindex         # rebuild the indexer image, then rebuild the Elasticsea
 
 The sample dataset needs no credentials. `scripts/dev/compose.sh` and `scripts/dev/run.ts` set a default for every dev database and Elasticsearch password, so a new clone has no `.env` file at all. Two things change this:
 
-- **A real dump.** Email dumps@qafiyah.com for a read-only token (`data/README.md`). Then put its four `DATA_*` values in a root `.env` file, which git ignores. The next `bun run dev` downloads the newest dump, and restores it instead of the sample. If the volume already holds the sample, run `bun run db:reset` after that.
+- **A real dump.** Email dumps@qafiyah.com for a read-only token (`data/README.md`). Then put its four `DATA_*` values in a root `.env` file, which git ignores. `bun run dev --dump <folder>` and `bun run db:reset --dump <folder>` then download that dump (see "Working with the full corpus").
 - **The maintainers' age key.** With this key, `bun run secrets:pull` generates `.env` from `secrets/dev.enc.env`, which holds the maintainer token of the data bucket. On such a machine, never edit `.env` by hand. See `docs/deployment/secrets.md`. Without the key, the `secrets:*` commands do not apply, and you write `.env` yourself.
 
 ## Quality gates
@@ -122,23 +127,6 @@ The smoke runs leave your dev environment as they found it:
 `rust:test:db` starts the dev Postgres and Elasticsearch, and runs the one-shot indexer. It then runs `apps/api/tests/db.rs` and the indexer's tests, with the same connection strings that `bun run dev` uses. Without the `QAFIYAH_TEST_*` variables, the database-backed tests skip themselves. That is why plain `cargo test` needs no infrastructure. The API under test keeps its 5 second statement timeout. The harness's own checks, some of which scan the whole corpus, run on a separate pool with 60 seconds (#233).
 
 Run `bun run ci` before you open a pull request, because it is the full gate. GitHub Actions runs the same gate, and skips a Docker phase when the change touches nothing that the phase uses (`docs/topology.md`, "CI/CD topology"). If Docker is not available, `bun run ci --no-docker` skips the Docker steps: the diagram check, the database-backed tests, and both smoke runs. `bun run ci --docker-only` runs only those steps. The stack smoke builds the three images through `compose up --build`, so a full run also proves that every image builds.
-
-## Working in a git worktree
-
-You may work in a git worktree, not the primary checkout (for example, under `.worktrees/`). To isolate it from a dev stack that already runs in the primary checkout, **pass `--worktree` to `dev`, `db:reset`, and `reindex`**:
-
-```bash
-bun run dev --worktree
-./scripts/dev/db-reset.sh --worktree
-./scripts/es/reindex.sh --worktree
-bun run smoke:dev --worktree     # against a --worktree dev server
-```
-
-Without `--worktree`, a worktree uses the same Docker Compose project name and ports as the primary checkout. So if you run `dev` in both at the same time, they collide. With `--worktree`, the Compose project name and every port get an offset that comes from the worktree's directory name. This covers Postgres, Elasticsearch, the edge gateway, the API, the web app, and the inspector. Several worktrees can then run their own dev stacks side by side.
-
-Being in a worktree does not turn on `--worktree`. `scripts/dev/worktree.ts` only _detects_ a worktree. Nothing isolates the ports or the Compose project unless you pass the flag. If you pass `--worktree` in the primary checkout, the command fails with "nothing to isolate against".
-
-On the first `bun run dev --worktree`, the worktree gets a copy of the primary checkout's root `.env`, unless it already has one. `apps/web/.env` is generated with the worktree's own API port.
 
 ## Committing
 

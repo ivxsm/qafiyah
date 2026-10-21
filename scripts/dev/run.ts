@@ -1,17 +1,10 @@
 #!/usr/bin/env bun
 
-import {
-  DEV_API_PORT,
-  DEV_INSPECTOR_PORT,
-  DEV_MCP_PORT,
-  DEV_POSTGRES_PORT,
-  DEV_WEB_PORT,
-} from '@qafiyah/config';
+import { DEV_API_PORT, DEV_MCP_PORT } from '@qafiyah/config';
 
 import { checkPrerequisites } from './doctor';
 import { blocksDev, formatReport } from './doctor-report';
-import { dumpStageLine } from './dump-stage';
-import { ensureEnvFileFrom, loadEnvFile } from './env-file';
+import { dumpChoice, holdsDump, SAMPLE_DUMP } from './dump-stage';
 import {
   cargoProgress,
   composeProgress,
@@ -22,13 +15,11 @@ import {
   readLines,
 } from './progress';
 import { serviceUrls } from './service-urls';
-import { primaryCheckoutRoot, resolveWorktreeIdentity, type WorktreeIdentity } from './worktree';
 
 import type { Subprocess } from 'bun';
 
 const ROOT = `${import.meta.dir}/../..`;
 const VERBOSE = process.argv.includes('--verbose');
-const WORKTREE_FLAG = process.argv.includes('--worktree');
 const WITH_INSPECTOR = process.argv.includes('--inspector');
 
 const supportsColor = process.stdout.isTTY && process.env['NO_COLOR'] === undefined;
@@ -164,22 +155,40 @@ async function runStage(label: string, cmd: string[], options: StageOptions = {}
 }
 
 async function dumpStage(): Promise<void> {
+  const choice = dumpChoice(process.argv);
+  if (choice.kind === 'invalid') {
+    console.error(red(choice.reason));
+    process.exit(1);
+  }
+  if (choice.kind === 'sample') {
+    console.log(`${bold('▶')} dump... ${green('✓')} the 100-poem sample (${SAMPLE_DUMP})`);
+    return;
+  }
+  process.env['DEV_DUMP'] = choice.folder;
   const stage = startStage('dump');
   const start = Date.now();
-  const proc = Bun.spawn(['./scripts/data/pull.sh'], {
-    cwd: ROOT,
-    env: process.env,
-    stdout: 'ignore',
-    stderr: 'pipe',
-  });
-  const stderr = await new Response(proc.stderr).text();
-  const code = await proc.exited;
+  if (!holdsDump(`${ROOT}/data/db/${choice.folder}`)) {
+    const proc = Bun.spawn(['./scripts/data/pull.sh', `db/${choice.folder}`], {
+      cwd: ROOT,
+      env: process.env,
+      stdout: 'ignore',
+      stderr: 'pipe',
+    });
+    const stderr = await new Response(proc.stderr).text();
+    if ((await proc.exited) !== 0) {
+      stage.end();
+      console.log(`${red('✗')} ${dim(`(${formatMs(Date.now() - start)})`)}`);
+      console.error(stderr.trim());
+      process.exit(1);
+    }
+  }
   stage.end();
-  const ms = Date.now() - start;
-  const line = dumpStageLine(code, stderr);
-  const mark = line.ok ? green('✓') : yellow('⚠');
-  console.log(`${mark} ${line.text} ${dim(`(${formatMs(ms)})`)}`);
-  if (!line.ok && stderr.trim()) console.error(dim(stderr.trim()));
+  console.log(
+    `${green('✓')} ${choice.folder}, restored on a fresh database ${dim(`(${formatMs(Date.now() - start)})`)}`
+  );
+  console.log(
+    dim(`  to switch an existing database, run bun run db:reset --dump ${choice.folder}`)
+  );
 }
 
 async function preflightStage(target: string): Promise<void> {
@@ -212,18 +221,10 @@ async function preflightStage(target: string): Promise<void> {
   console.log(`${green('✓')} ${dim(`(${formatMs(ms)})`)}`);
 }
 
-async function ensureWebEnvFile(effectiveApiPort: number): Promise<void> {
+async function ensureWebEnvFile(): Promise<void> {
   const envFile = `${ROOT}/apps/web/.env`;
   if (await Bun.file(envFile).exists()) return;
-  await Bun.write(envFile, `PUBLIC_API_URL=http://localhost:${effectiveApiPort}\n`);
-}
-
-async function ensureRootEnvFile(identity: WorktreeIdentity): Promise<void> {
-  if (!identity.isWorktree) return;
-  const primaryRoot = await primaryCheckoutRoot();
-  if ((await ensureEnvFileFrom(`${ROOT}/.env`, `${primaryRoot}/.env`)) === 'created') {
-    await loadEnvFile(`${ROOT}/.env`, process.env);
-  }
+  await Bun.write(envFile, `PUBLIC_API_URL=http://localhost:${DEV_API_PORT}\n`);
 }
 
 async function printReclaimable(): Promise<void> {
@@ -244,9 +245,9 @@ async function printReclaimable(): Promise<void> {
   console.log(dim(`  ${items.join(', ')} reclaimable (docker system prune to clean up)`));
 }
 
-async function tagDbContainer(psArgs: string[]): Promise<void> {
+async function tagDbContainer(): Promise<void> {
   const stage = startStage('db container tag', false);
-  const psProc = Bun.spawn(['./scripts/dev/compose.sh', 'ps', '-q', 'db', ...psArgs], {
+  const psProc = Bun.spawn(['./scripts/dev/compose.sh', 'ps', '-q', 'db'], {
     cwd: ROOT,
     env: process.env,
     stdout: 'pipe',
@@ -522,36 +523,6 @@ async function shutdown(children: Watched[]): Promise<void> {
   console.log(green('✓ stopped'));
 }
 
-const identity = await resolveWorktreeIdentity();
-if (WORKTREE_FLAG && !identity.isWorktree) {
-  console.error(
-    red('--worktree passed but this is the primary checkout, nothing to isolate against')
-  );
-  process.exit(1);
-}
-if (identity.isWorktree && !WORKTREE_FLAG) {
-  console.warn(
-    yellow(
-      `running in worktree '${identity.slug}' without --worktree, ports and containers will collide with the primary checkout`
-    )
-  );
-}
-const isolating = WORKTREE_FLAG && identity.isWorktree;
-const offset = isolating && identity.isWorktree ? identity.offset : 0;
-
-if (isolating && identity.isWorktree) {
-  console.log(`${bold('▶')} worktree: ${identity.slug} ${dim(`(ports +${offset})`)}`);
-  process.env['PORT'] = String(DEV_API_PORT + offset);
-  process.env['WEB_PORT'] = String(DEV_WEB_PORT + offset);
-  process.env['INSPECTOR_PORT'] = String(DEV_INSPECTOR_PORT + offset);
-  process.env['DEV_POSTGRES_PORT'] = String(DEV_POSTGRES_PORT + offset);
-  process.env['WEB_BASE_URL'] = `http://localhost:${DEV_WEB_PORT + offset}`;
-  process.env['INTERNAL_API_URL'] = `http://localhost:${DEV_API_PORT + offset}`;
-  process.env['MCP_PORT'] = String(DEV_MCP_PORT + offset);
-}
-
-await ensureRootEnvFile(identity);
-
 process.env['LANG'] = 'en_US.UTF-8';
 process.env['POSTGRES_PASSWORD'] ??= 'qafiyah';
 process.env['ELASTIC_PASSWORD'] ??= 'qafiyah-dev-es';
@@ -563,8 +534,6 @@ process.env['ES_MONITOR_PASSWORD'] ??= 'qafiyah-dev-es-monitor';
 process.env['GRAFANA_ADMIN_PASSWORD'] ??= 'qafiyah-dev-grafana';
 process.env['INTERNAL_API_KEY'] = process.env['API_KEY_INTERNAL'] ?? '';
 
-const withWorktreeFlag = (cmd: string[]): string[] => (isolating ? [...cmd, '--worktree'] : cmd);
-
 await prerequisitesStage();
 await dumpStage();
 function watchDbLog(onLine: (line: string) => void): () => void {
@@ -573,14 +542,7 @@ function watchDbLog(onLine: (line: string) => void): () => void {
     if (polling) return;
     polling = true;
     const proc = Bun.spawn(
-      withWorktreeFlag([
-        './scripts/dev/compose.sh',
-        'logs',
-        '--tail',
-        '5',
-        '--no-log-prefix',
-        'db',
-      ]),
+      ['./scripts/dev/compose.sh', 'logs', '--tail', '5', '--no-log-prefix', 'db'],
       { cwd: ROOT, env: process.env, stdout: 'pipe', stderr: 'ignore' }
     );
     void readLines(proc.stdout, onLine).finally(() => {
@@ -592,18 +554,18 @@ function watchDbLog(onLine: (line: string) => void): () => void {
 
 await runStage(
   'docker (db, elasticsearch)',
-  withWorktreeFlag(['./scripts/dev/compose.sh', 'up', '-d', '--wait', 'db', 'elasticsearch']),
+  ['./scripts/dev/compose.sh', 'up', '-d', '--wait', 'db', 'elasticsearch'],
   { progress: composeProgress(), watch: watchDbLog }
 );
-await tagDbContainer(withWorktreeFlag([]));
+await tagDbContainer();
 await runStage(
   'search-indexer',
-  withWorktreeFlag(['./scripts/dev/compose.sh', 'run', '--rm', '--no-deps', 'search-indexer']),
+  ['./scripts/dev/compose.sh', 'run', '--rm', '--no-deps', 'search-indexer'],
   { progress: (line) => indexerProgress(line) ?? imageBuildProgress(line) }
 );
-await ensureWebEnvFile(DEV_API_PORT + offset);
+await ensureWebEnvFile();
 
-const urls = serviceUrls({ env: process.env, offset });
+const urls = serviceUrls(process.env);
 process.env['ELASTICSEARCH_URL'] = urls.elasticsearch;
 process.env['DATABASE_URL'] = urls.database;
 process.env['DATABASE_URL_ACCOUNTS'] = urls.accounts;
@@ -619,8 +581,8 @@ const api = startService('api', './target/debug/qafiyah-api', process.env);
 await waitReady(api, 'api');
 const mcp = startService('mcp', './target/debug/qafiyah-mcp', {
   ...process.env,
-  INTERNAL_API_URL: `http://localhost:${DEV_API_PORT + offset}`,
-  MCP_PORT: String(DEV_MCP_PORT + offset),
+  INTERNAL_API_URL: `http://localhost:${DEV_API_PORT}`,
+  MCP_PORT: String(DEV_MCP_PORT),
 });
 await waitReady(mcp, 'mcp', [api]);
 const web = startWeb();
