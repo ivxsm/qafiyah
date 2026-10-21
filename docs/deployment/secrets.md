@@ -13,7 +13,7 @@ This page is for machines that hold an age key: the maintainers' laptops and the
 
 ## Important
 
-- **Back up the laptop's private key.** Save the contents of `~/.config/sops/age/keys.txt` in the password manager. If that file is lost and no other recipient can decrypt, every committed secret is lost for good. This includes the `DUMP_KEY__*` passphrases that unlock `data/db/`, the `AVATAR_KEY__*` passphrases that unlock `data/avatars/`, and the `FEELINGS_KEY__*` passphrases that unlock `data/feelings/`.
+- **Back up the laptop's private key.** Save the contents of `~/.config/sops/age/keys.txt` in the password manager. If that file is lost and no other recipient can decrypt, every committed secret is lost for good.
 - **A new VPS needs its key before the first deploy.** `bun run deploy` and `bun run db:reseed` fail on a server that has no `sops`, no age key, or no recipient line in `.sops.yaml`. Follow "Setting up a new production server" below first.
 - **Never edit `.env` by hand**, on the laptop or on the VPS. The next `secrets:pull` or deploy overwrites it. Edit with `bun run secrets:edit` instead.
 - **Never commit a decrypted file.** Only `secrets/*.enc.env` belongs in git.
@@ -26,7 +26,6 @@ bun run secrets:edit          # edit dev in $EDITOR, then generate .env again
 bun run secrets:edit prod     # edit prod, then commit, release, and run bun run deploy
 bun run secrets:pull          # generate .env again from secrets/dev.enc.env
 bun run secrets:check         # check both files against scripts/secrets/schema.ts
-bun run dump:key:set          # write DUMP_KEY__* into secrets/dev.enc.env
 ```
 
 `bun run deploy` and `bun run db:reseed` run `scripts/secrets/pull.sh prod` on the VPS right after they check out `origin/main`. So a committed change to `secrets/prod.enc.env` reaches production on the next deploy.
@@ -47,7 +46,6 @@ bun run dump:key:set          # write DUMP_KEY__* into secrets/dev.enc.env
 The check runs at these points:
 
 - after every `secrets:edit` (an invalid save opens the editor again)
-- in `dump:key:set`
 - before `secrets:pull` writes the dev `.env`
 - in `bun run ci`, which the pre-push hook and GitHub Actions run
 
