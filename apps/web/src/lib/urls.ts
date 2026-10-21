@@ -1,6 +1,13 @@
 import { API_URL, SITE_URL } from '@/lib/constants/config';
 import { canonicalPoetFilters } from '@/lib/poet-filters';
-import { API_V1_PREFIX, CDN_URL } from '@qafiyah/config';
+import {
+  API_V1_PREFIX,
+  CDN_URL,
+  FACEBOOK_SHARE_URL,
+  TELEGRAM_SHARE_URL,
+  WHATSAPP_SHARE_URL,
+  X_INTENT_TWEET_URL,
+} from '@qafiyah/config';
 
 export type TaxonomySection = 'meters' | 'rhymes' | 'themes' | 'collections';
 
@@ -26,6 +33,30 @@ export function avatarsUrl(): string {
 
 export function raaqimUrl(): string {
   return `${API_URL}${API_V1_PREFIX}/go/raaqim`;
+}
+
+const SHARE_NETWORK_VALUES = ['x', 'whatsapp', 'facebook', 'telegram'] as const;
+
+export type ShareNetwork = (typeof SHARE_NETWORK_VALUES)[number];
+
+export type SharePayload = {
+  readonly body: string;
+  readonly url: string;
+};
+
+export function shareIntent(network: ShareNetwork, payload: SharePayload): string {
+  const { body, url } = payload;
+  const text = `${body}\n${url}`;
+  switch (network) {
+    case 'x':
+      return `${X_INTENT_TWEET_URL}?text=${encodeURIComponent(text)}`;
+    case 'whatsapp':
+      return `${WHATSAPP_SHARE_URL}?text=${encodeURIComponent(text)}`;
+    case 'telegram':
+      return `${TELEGRAM_SHARE_URL}?url=${encodeURIComponent(url)}&text=${encodeURIComponent(body)}`;
+    case 'facebook':
+      return `${FACEBOOK_SHARE_URL}?u=${encodeURIComponent(url)}`;
+  }
 }
 
 export function isCanonical(url: URL, canonical: string): boolean {

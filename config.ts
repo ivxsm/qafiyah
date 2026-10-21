@@ -30,6 +30,9 @@ export const POSTHOG_PROXY_URL = `https://ix.${PROD_DOMAIN}`;
 export const CDN_URL = `https://cdn.${PROD_DOMAIN}`;
 
 export const X_INTENT_TWEET_URL = 'https://x.com/intent/tweet';
+export const FACEBOOK_SHARE_URL = 'https://www.facebook.com/sharer/sharer.php';
+export const WHATSAPP_SHARE_URL = 'https://wa.me/';
+export const TELEGRAM_SHARE_URL = 'https://t.me/share/url';
 
 const X_HANDLE = 'qafiyahx';
 export const X_PROFILE_URL = `https://x.com/${X_HANDLE}`;
