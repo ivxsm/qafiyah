@@ -2,8 +2,12 @@
 
 import { Fragment, type CSSProperties, type ReactNode, useEffect, useMemo, useState } from 'react';
 
+import { getPoemSelectionText } from '@/components/poem-copy';
 import { PoemToolbar } from '@/components/poem-toolbar';
+import { ShareButton } from '@/components/share-button';
 import { formatArabicCount, stripTashkeel } from '@/lib/arabic';
+import { SITE_URL } from '@/lib/constants/config';
+import { formatPoemQuote, formatPoemText, SHARE_TEXTS } from '@/lib/constants/copy';
 import {
   CLASSICAL_LAYOUT_POEM_TYPES,
   FREE_VERSE_POEM_TYPE,
@@ -15,6 +19,7 @@ import { poetsUrl, poetUrl } from '@/lib/urls';
 import { cn } from '@/lib/utils';
 
 import type { Poem } from '@/lib/api/result-types';
+import type { ClipboardEvent } from 'react';
 
 const VERSE_GAP = 'gap-[calc(2.5rem*var(--poem-spacing))] sm:gap-[calc(3rem*var(--poem-spacing))]';
 const HEMISTICH_GAP =
@@ -72,6 +77,7 @@ type PoemDisplayProps = {
   readonly verses: Poem['verses'];
   readonly verseCount: Poem['verseCount'];
   readonly poemType: Poem['poemType'];
+  readonly sharePath: string;
 };
 
 export function PoemDisplay({
@@ -83,13 +89,26 @@ export function PoemDisplay({
   verses,
   verseCount,
   poemType,
+  sharePath,
 }: PoemDisplayProps) {
+  const handleCopy = (event: ClipboardEvent<HTMLElement>) => {
+    if (event.defaultPrevented) return;
+    const container = event.currentTarget;
+    const text = getPoemSelectionText(container.ownerDocument.getSelection(), container);
+    if (text === null) return;
+    event.clipboardData.setData('text/plain', formatPoemQuote(text, `${SITE_URL}${sharePath}`));
+    event.preventDefault();
+  };
   const isClassical = CLASSICAL_LAYOUT_POEM_TYPES.has(poemType.slug);
   const lineByLine =
     poemType.slug === FREE_VERSE_POEM_TYPE || verses.every((entry) => entry.length === 1);
   const [fontScale, setFontScale] = useState<number>(POEM_SCALE.font.initial);
   const [spacingScale, setSpacingScale] = useState<number>(POEM_SCALE.spacing.initial);
   const [showTashkeel, setShowTashkeel] = useState(true);
+  const shownVerses = useMemo(
+    () => (showTashkeel ? verses : verses.map((entry) => entry.map((part) => stripTashkeel(part)))),
+    [verses, showTashkeel]
+  );
   const highlightTerms = useHighlightTerms();
   const highlightRegex = useMemo(
     () =>
@@ -133,14 +152,21 @@ export function PoemDisplay({
           spacingScale={spacingScale}
           spacingMin={lineByLine ? POEM_SCALE.spacing.halvesMin : POEM_SCALE.spacing.min}
           showTashkeel={showTashkeel}
+          copyText={`${formatPoemText(shownVerses, poet.name)}\n${SITE_URL}${sharePath}`}
           onFontScaleChange={setFontScale}
           onSpacingScaleChange={setSpacingScale}
           onToggleTashkeel={() => setShowTashkeel((shown) => !shown)}
-        />
+        >
+          <ShareButton
+            title={SHARE_TEXTS.poemTitle}
+            body={formatPoemText(shownVerses.slice(0, 1), poet.name)}
+            path={sharePath}
+          />
+        </PoemToolbar>
       </header>
 
       <div className="relative flex w-full flex-col items-center justify-between">
-        <article className="flex w-full flex-col items-center p-6 md:p-8">
+        <article className="flex w-full flex-col items-center p-6 md:p-8" onCopy={handleCopy}>
           <div
             className={cn(
               'flex w-full flex-col text-verse font-normal',

@@ -30,7 +30,7 @@ These departures are not approved yet. A full scan found them on 2026-09-24. The
 
 - **What:** `bun run deploy` joins shell files, uploads them over SSH to a temporary file on the host, and runs that file there with stdin from `/dev/null`. It runs `git reset --hard`, builds every image on the 8 GB production server, and rolls replicas with a custom `rollout()`. `bun run db:reseed` builds `api` and `search-indexer` in the same way before it restores.
 - **Where:** `scripts/deploy/vps.sh`, `scripts/lib/remote.sh`, `scripts/lib/rollout.sh`, `scripts/db/reseed.sh`, `scripts/es/reindex-prod.sh`, `.github/workflows/images.yml`, `.claude/skills/deploy/SKILL.md`, `docs/deployment/architecture.md`
-- **Why it's unusual:** release Rust builds (`lto = true`, one codegen unit) and the Astro build compete with the live stack for memory. This is why the docs keep swap. With no registry, a rollback means a revert of `main` and a new build. The Images workflow builds each image and discards it. `rollout()` copies the docker-rollout plugin, with fixed timings: a health deadline of 150 seconds, and a settle time of 7 seconds.
+- **Why it's unusual:** release Rust builds (thin LTO, `Cargo.toml`) and the Astro build compete with the live stack for memory. This is why the docs keep swap. With no registry, a rollback means a revert of `main` and a new build. The Images workflow builds each image and discards it. `rollout()` copies the docker-rollout plugin, with fixed timings: a health deadline of 150 seconds, and a settle time of 7 seconds.
 - **Normal approach:** CI builds on merge and pushes SHA-tagged images to GHCR, the VPS runs `docker compose pull` and `docker rollout` (or Kamal), and rollback redeploys the previous tag.
 - **Status:** Needs review
 
@@ -114,22 +114,11 @@ These departures are not approved yet. A full scan found them on 2026-09-24. The
 - **Normal approach:** a `dev` script in `apps/api/package.json` (`cargo watch -x run`) supervised by `turbo run dev`, or `docker compose watch`, with readiness checked through `/healthz`.
 - **Status:** Needs review
 
-### Worktree isolation is layered over Compose and applied inconsistently
-
-- **What:** a `--worktree` flag hashes the worktree name into port offsets and a Compose project suffix across about eight scripts. `compose.sh` turns it on automatically in a linked worktree, while `run.ts`, `db-test.ts`, the smoke scripts, and `conformance.ts` honor only the explicit flag.
-- **Where:** `scripts/dev/worktree.ts`, `scripts/dev/compose.sh`, `scripts/dev/run.ts`, `scripts/ci.ts`, `scripts/smoke/surfaces.ts`, `scripts/api/conformance.ts`, `scripts/dev/db-test.ts`, `docker-compose.dev.yml`, `docs/development.md`
-- **Why it's unusual:** Compose already isolates each project. The repo overrides that with a fixed `COMPOSE_PROJECT_NAME`, `container_name`, and volume names, then builds isolation again on top.
-  - In a worktree without the flag, `compose.sh` starts the database and Elasticsearch on offset ports. But `run.ts` points the API at offset 0, which is the containers of the primary checkout.
-  - `docs/development.md` says that the flag is never implied, and `compose.sh` contradicts that.
-  - The fixed dev subnets also stop two worktrees from running full stacks at the same time.
-- **Normal approach:** let Compose scope by project (no `container_name` or fixed volume names in dev). Keep the ports of each checkout in its own `.env`, or read them with `docker compose port`.
-- **Status:** Needs review
-
 ### Smoke and contract tests run on a bespoke HTTP test framework
 
 - **What:** `scripts/smoke/` (about 2,600 lines) is its own test runner, with a probe DSL, suites, surfaces, verdicts, a concurrency pool, retries, latency budgets, and a reporter.
 - **Where:** `scripts/smoke/`
-- **Why it's unusual:** it gives up filtering, watch mode, standard reporters, and `test.each`, and the reinvented pieces drift. The "p95" over five samples is the maximum. `target.ts` can call `process.exit` at import time. `surfaces.ts` takes the first argument that is not `--worktree` as the target. So, from a reading of the code, `bun run smoke:dev --suite search` fails as an unknown target.
+- **Why it's unusual:** it gives up filtering, watch mode, standard reporters, and `test.each`, and the reinvented pieces drift. The "p95" over five samples is the maximum. `target.ts` can call `process.exit` at import time. `surfaces.ts` takes the first argument as the target. So, from a reading of the code, `bun run smoke:dev --suite search` fails as an unknown target.
 - **Normal approach:** `bun test` with `describe.each`/`test.each` over the probe tables (or Hurl for black-box HTTP). OpenAPI conformance already uses the standard tool, Schemathesis (`scripts/api/conformance.ts`).
 - **Status:** Needs review
 
@@ -215,7 +204,7 @@ These departures are not approved yet. A full scan found them on 2026-09-24. The
 
 ### The whole poem hydrates as a React island for the reading toolbar and a private `#h=` fragment
 
-- **What:** `PoemDisplay` renders the title, byline, and every verse as a `client:idle` island. The client-side needs are the reading toolbar (font size, spacing, and tashkeel, which reset on every load, and the theme toggle) and highlighting from a homemade `#h=term1,term2` fragment.
+- **What:** `PoemDisplay` renders the title, byline, and every verse as a `client:idle` island. The client-side needs are the reading toolbar (font size, spacing, and tashkeel, which reset on every load, the theme toggle, the copy poem button, and the share sheet), the link on copied selections, and highlighting from a homemade `#h=term1,term2` fragment.
 - **Where:** `apps/web/src/pages/poems/[slug].astro`, `apps/web/src/components/poem-display.tsx`, `apps/web/src/components/poem-toolbar.tsx`, `apps/web/src/lib/urls.ts`, `apps/web/src/lib/highlight.ts`
 - **Why it's unusual:** the verses ship twice, as HTML and as serialized props. The scale is applied twice: an inline `fontSize` on every hemistich, and a `--poem-scale` variable.
 - **Normal approach:** render the poem statically in Astro, and keep a small island for the toolbar. Highlight with Text Fragments (`#:~:text=`), or with a small script that uses the CSS Custom Highlight API.
@@ -630,6 +619,14 @@ The API is not only a thin database connector. The crate has no doc comments bey
 ## Web (`apps/web`)
 
 Paths are relative to `apps/web/src/` unless they start at the repo root.
+
+### Copied poem selections end with the poem's link
+
+- **What:** copying any text inside the poem copies the selected lines, one on each line, then a blank line and the poem's link. The copy poem button in the toolbar is separate. It copies the whole poem, the poet, and the link.
+- **Where:** `components/poem-display.tsx`, `components/poem-copy.ts`, `lib/constants/copy.ts`
+- **Why:** issue #304 requests attribution so copied verses keep a link to their source. Most readers select and copy a few lines, and do not use the button. The link is the plain poem URL, with no highlight fragment and no other text.
+- **Normal approach:** copy the selected text without additions, and offer a separate control to copy an attributed quotation.
+- **Date:** 2026-10-15
 
 ### Two API clients, and no key ever reaches the browser
 
