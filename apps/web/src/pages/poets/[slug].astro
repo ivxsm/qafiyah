@@ -130,15 +130,17 @@ const {
         </div>
       )}
       <div class="flex min-w-0 flex-col gap-2">
-        <div class="flex items-center gap-1">
+        <div class="flex items-start">
           <h1 class={`${TYPE.title} min-w-0 text-text`}>{heading}</h1>
-          <ShareButton
-            client:idle
-            title={SHARE_TEXTS.poetTitle}
-            body={heading}
-            path={poetUrl(slug)}
-            className="-my-2 shrink-0"
-          />
+          <div class="flex h-(--title-leading) shrink-0 items-center">
+            <ShareButton
+              client:idle
+              title={SHARE_TEXTS.poetTitle}
+              body={heading}
+              path={poetUrl(slug)}
+              className="translate-y-0.5 md:[&_svg]:size-6"
+            />
+          </div>
         </div>
         <p class={`${TYPE.caption} text-text-subtle`}>{subtitle}</p>
       </div>
